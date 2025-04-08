@@ -23,6 +23,22 @@ def get_all_clubs(df):
     morning_cols = [f'ฐานเช้า อันดับที่ {i}' for i in range(1, 9)]
     afternoon_cols = [f'ฐานบ่าย อันดับที่ {i}' for i in range(1, 9)]
     
+    # Clean up function to standardize club names
+    def clean_club_name(name):
+        if pd.isna(name):
+            return name
+        # Remove leading/trailing whitespace
+        cleaned = name.strip()
+        # Normalize Swimming club name (both versions should be the same)
+        if cleaned.startswith('Swimming'):
+            return 'Swimming (ชมรมว่ายน้ำและโปโลน้ำ)'
+        return cleaned
+    
+    # Apply cleanup to all club name columns
+    for col in morning_cols + afternoon_cols:
+        df[col] = df[col].apply(clean_club_name)
+    
+    # Get unique cleaned club names
     morning_clubs = set()
     afternoon_clubs = set()
     
@@ -31,6 +47,15 @@ def get_all_clubs(df):
     
     for col in afternoon_cols:
         afternoon_clubs.update(df[col].dropna().unique())
+    
+    # Log clean club names for verification
+    print("\nCleaned Morning Clubs:")
+    for club in sorted(morning_clubs):
+        print(f"  - {club}")
+    
+    print("\nCleaned Afternoon Clubs:")
+    for club in sorted(afternoon_clubs):
+        print(f"  - {club}")
     
     return {
         'morning': list(morning_clubs),
