@@ -126,9 +126,14 @@ def create_student_preferences(df):
     return students
 
 # Calculate fairness score for a student
-def calculate_fairness_score(student, club, period, club_counts):
+def calculate_fairness_score(student, club, period, club_counts, represented_groups=None):
     # This score determines priority when a club is oversubscribed
     score = 0
+    
+    # If we're tracking group representation, heavily prioritize students from unrepresented groups
+    if represented_groups is not None:
+        if student['group'] not in represented_groups:
+            score += 1000  # Extremely high priority for unrepresented groups
     
     # How many clubs has the student already been assigned to?
     assigned_count = len(student['assignments'][period])
@@ -155,6 +160,14 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
     # Track which club each student prefers for this slot
     slot_preferences = defaultdict(list)
     
+    # Track which groups are represented in each club
+    club_groups = {club: set() for club in clubs[period]}
+    for student_id in students:
+        group = students[student_id]['group']
+        assigned_club = students[student_id]['assignments'][period].get(slot)
+        if assigned_club:
+            club_groups[assigned_club].add(group)
+    
     # Collect all students' preferences for this slot
     for student_id, student in students.items():
         # Skip if student already has an assignment for this slot
@@ -167,30 +180,73 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
             preferred_club = main_prefs[slot-1]
             slot_preferences[preferred_club].append(student_id)
         
-    # Handle oversubscribed clubs
+    # First pass: Ensure group representation
+    # For each club, make sure there's at least one student from each group
     for club in clubs[period]:
-        if len(slot_preferences[club]) > 20:
+        # Which groups are currently missing from this club?
+        missing_groups = set('0123456789') - club_groups[club]
+        if missing_groups and len(slot_preferences[club]) > 0:
+            candidates_by_group = defaultdict(list)
+            
+            # Group candidates by their group
+            for student_id in slot_preferences[club]:
+                group = students[student_id]['group']
+                if group in missing_groups:
+                    candidates_by_group[group].append(student_id)
+            
+            # For each missing group, try to add a student
+            for group in missing_groups:
+                if candidates_by_group[group]:  # If we have candidates from this group
+                    # Choose the best candidate (one with highest fairness score)
+                    group_candidates = []
+                    for student_id in candidates_by_group[group]:
+                        score = calculate_fairness_score(students[student_id], club, period, club_counts)
+                        group_candidates.append((student_id, score))
+                    
+                    group_candidates.sort(key=lambda x: x[1], reverse=True)
+                    best_candidate = group_candidates[0][0]
+                    
+                    # Add this student to the club
+                    time_slots[period][slot][club].append(best_candidate)
+                    students[best_candidate]['assignments'][period][slot] = club
+                    club_groups[club].add(group)  # Update group representation
+                    
+                    # Remove from slot_preferences to avoid adding twice
+                    slot_preferences[club].remove(best_candidate)
+    
+    # Second pass: Handle regular assignments and oversubscribed clubs
+    for club in clubs[period]:
+        # Leave room for missing groups
+        remaining_capacity = 20 - len(time_slots[period][slot][club])
+        
+        if len(slot_preferences[club]) > remaining_capacity and remaining_capacity > 0:
             print(f"Club {club} is oversubscribed in {period} slot {slot} with {len(slot_preferences[club])} students")
             
             # Calculate fairness scores for all students interested in this club
             candidates = []
             for student_id in slot_preferences[club]:
-                fairness_score = calculate_fairness_score(students[student_id], club, period, club_counts)
+                # Consider existing group representation for fairness scoring
+                group = students[student_id]['group']
+                represented_groups = club_groups[club]
+                
+                fairness_score = calculate_fairness_score(
+                    students[student_id], club, period, club_counts, represented_groups)
                 candidates.append((student_id, fairness_score))
             
             # Sort by fairness score (highest to lowest)
             candidates.sort(key=lambda x: x[1], reverse=True)
             
-            # Take top 20 students
-            selected_students = [c[0] for c in candidates[:20]]
+            # Add students up to the remaining capacity
+            selected_students = [c[0] for c in candidates[:remaining_capacity]]
             
             # Assign them to this club
             for student_id in selected_students:
                 time_slots[period][slot][club].append(student_id)
                 students[student_id]['assignments'][period][slot] = club
+                club_groups[club].add(students[student_id]['group'])  # Update group representation
             
             # Try to find alternate clubs for rejected students
-            rejected_students = [c[0] for c in candidates[20:]]
+            rejected_students = [c[0] for c in candidates[remaining_capacity:]]
             
             for student_id in rejected_students:
                 # First try backup preferences
@@ -201,36 +257,65 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                     if len(time_slots[period][slot][backup_club]) < 20:
                         time_slots[period][slot][backup_club].append(student_id)
                         students[student_id]['assignments'][period][slot] = backup_club
+                        club_groups[backup_club].add(students[student_id]['group'])
                         assigned = True
                         break
                 
                 # If no backup club available, try any available club
                 if not assigned:
-                    for any_club in clubs[period]:
-                        if len(time_slots[period][slot][any_club]) < 20:
-                            time_slots[period][slot][any_club].append(student_id)
-                            students[student_id]['assignments'][period][slot] = any_club
-                            break
-        else:
+                    available_clubs = [club for club in clubs[period] 
+                                     if len(time_slots[period][slot][club]) < 20]
+                    if available_clubs:
+                        # Choose club with fewest students
+                        available_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = available_clubs[0]
+                        
+                        time_slots[period][slot][chosen_club].append(student_id)
+                        students[student_id]['assignments'][period][slot] = chosen_club
+                        club_groups[chosen_club].add(students[student_id]['group'])
+                        assigned = True
+                        
+        elif len(slot_preferences[club]) <= remaining_capacity:
             # If not oversubscribed, assign all students to their preferred club
             for student_id in slot_preferences[club]:
                 time_slots[period][slot][club].append(student_id)
                 students[student_id]['assignments'][period][slot] = club
+                club_groups[club].add(students[student_id]['group'])
     
     # Assign remaining students who weren't assigned yet for various reasons
     for student_id, student in students.items():
         if slot not in student['assignments'][period]:
-            # Try to find any available club
-            for club in clubs[period]:
-                if len(time_slots[period][slot][club]) < 20:
-                    time_slots[period][slot][club].append(student_id)
-                    students[student_id]['assignments'][period][slot] = club
-                    break
+            # Try to find any available club with space
+            available_clubs = [club for club in clubs[period] 
+                              if len(time_slots[period][slot][club]) < 20]
+            
+            if available_clubs:
+                # Prefer clubs with missing group representation
+                group = student['group']
+                
+                # First check if there are clubs missing this group
+                priority_clubs = [club for club in available_clubs if group not in club_groups[club]]
+                
+                if priority_clubs:
+                    # Choose the club with fewest students
+                    priority_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                    chosen_club = priority_clubs[0]
+                else:
+                    # Choose the club with fewest students
+                    available_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                    chosen_club = available_clubs[0]
+                
+                time_slots[period][slot][chosen_club].append(student_id)
+                students[student_id]['assignments'][period][slot] = chosen_club
+                club_groups[chosen_club].add(group)
     
     return students, time_slots
 
-# Ensure each group has at least one student in each club
+# Ensure each group has at least one student in each club, prioritize representation over club size limits
 def ensure_group_representation(students, time_slots, clubs):
+    # Step 1: Ensure at least one representative from each group (0-9) in each club
+    # This is the highest priority - even if it means clubs exceeding 20 students
+    
     # Track which groups are represented in which clubs
     representation = {
         'morning': {club: set() for club in clubs['morning']},
@@ -248,51 +333,109 @@ def ensure_group_representation(students, time_slots, clubs):
     # For each club missing representation from any group, try to add a student
     for period in ['morning', 'afternoon']:
         for club in clubs[period]:
+            # Check which groups are missing
             missing_groups = set('0123456789') - representation[period][club]
+            if not missing_groups:
+                continue  # All groups are represented
+            
+            print(f"Club {club} ({period}) is missing students from groups: {missing_groups}")
             
             for group in missing_groups:
                 # Find students from this group
                 group_students = [s_id for s_id, s in students.items() if s['group'] == group]
+                random.shuffle(group_students)  # Randomize to avoid biases
                 
-                # Try to find a slot where the club isn't full and a student isn't assigned
+                # Try to find a slot where we can add the student
                 assigned = False
-                for slot in range(1, 5):
-                    if len(time_slots[period][slot][club]) >= 20:
-                        continue  # Club is full in this slot
-                    
-                    for student_id in group_students:
-                        # If student already has this club in any slot, skip
+                
+                # First try: Find an empty slot for the student
+                for student_id in group_students:
+                    for slot in range(1, 5):
+                        # Skip if student already has this club in any slot
                         if any(students[student_id]['assignments'][period].get(s) == club 
-                               for s in range(1, 5)):
+                              for s in range(1, 5)):
                             continue
-                        
+                            
                         # If student doesn't have an assignment for this slot, add them
                         if slot not in students[student_id]['assignments'][period]:
                             time_slots[period][slot][club].append(student_id)
                             students[student_id]['assignments'][period][slot] = club
                             representation[period][club].add(group)
+                            print(f"  Added student {student_id} (group {group}) to {club} ({period} slot {slot}) - free slot")
                             assigned = True
                             break
-                        # Or if we need to swap assignments
-                        else:
-                            current_club = students[student_id]['assignments'][period][slot]
-                            # Only swap if current club already has representation from this group
-                            if (group in representation[period][current_club] and 
-                                len([s for s in time_slots[period][slot][current_club] 
-                                    if students[s]['group'] == group]) > 1):
-                                
-                                # Remove from current club
-                                time_slots[period][slot][current_club].remove(student_id)
-                                
-                                # Add to new club
-                                time_slots[period][slot][club].append(student_id)
-                                students[student_id]['assignments'][period][slot] = club
-                                representation[period][club].add(group)
-                                assigned = True
-                                break
                     
                     if assigned:
                         break
+                
+                # If still not assigned, try swapping from another club
+                if not assigned:
+                    for student_id in group_students:
+                        for slot in range(1, 5):
+                            # Skip if student already has this club
+                            if any(students[student_id]['assignments'][period].get(s) == club 
+                                  for s in range(1, 5)):
+                                continue
+                                
+                            # If student has another assignment for this slot
+                            if slot in students[student_id]['assignments'][period]:
+                                current_club = students[student_id]['assignments'][period][slot]
+                                
+                                # Only swap if current club has multiple students from this group
+                                # or representation from this group in other slots
+                                same_group_in_slot = [s for s in time_slots[period][slot][current_club] 
+                                                      if students[s]['group'] == group]
+                                
+                                if len(same_group_in_slot) > 1:
+                                    # Remove from current club
+                                    time_slots[period][slot][current_club].remove(student_id)
+                                    
+                                    # Add to new club
+                                    time_slots[period][slot][club].append(student_id)
+                                    students[student_id]['assignments'][period][slot] = club
+                                    representation[period][club].add(group)
+                                    print(f"  Added student {student_id} (group {group}) to {club} ({period} slot {slot}) - swapped from {current_club}")
+                                    assigned = True
+                                    break
+                        
+                        if assigned:
+                            break
+                
+                # Last resort: If still not assigned, force an assignment
+                if not assigned:
+                    # Find the slot with fewest students for this club
+                    slot_counts = [(slot, len(time_slots[period][slot][club])) for slot in range(1, 5)]
+                    slot_counts.sort(key=lambda x: x[1])  # Sort by count
+                    
+                    target_slot = slot_counts[0][0]  # Slot with fewest students
+                    
+                    for student_id in group_students:
+                        # If student already has an assignment for this slot
+                        if target_slot in students[student_id]['assignments'][period]:
+                            current_club = students[student_id]['assignments'][period][target_slot]
+                            
+                            # Remove from current club
+                            time_slots[period][target_slot][current_club].remove(student_id)
+                            
+                            # Add to new club (even if it exceeds 20)
+                            time_slots[period][target_slot][club].append(student_id)
+                            students[student_id]['assignments'][period][target_slot] = club
+                            representation[period][club].add(group)
+                            print(f"  FORCED: Added student {student_id} (group {group}) to {club} ({period} slot {target_slot}) - removed from {current_club}")
+                            assigned = True
+                            break
+                        elif not any(students[student_id]['assignments'][period].get(s) == club 
+                                    for s in range(1, 5)):
+                            # If student doesn't have this club and doesn't have an assignment for this slot
+                            time_slots[period][target_slot][club].append(student_id)
+                            students[student_id]['assignments'][period][target_slot] = club
+                            representation[period][club].add(group)
+                            print(f"  FORCED: Added student {student_id} (group {group}) to {club} ({period} slot {target_slot}) - unassigned slot")
+                            assigned = True
+                            break
+                            
+                    if not assigned:
+                        print(f"  WARNING: Could not assign any student from group {group} to {club} ({period})")
     
     return students, time_slots
 
