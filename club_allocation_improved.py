@@ -1,0 +1,589 @@
+import pandas as pd
+import numpy as np
+from collections import defaultdict, Counter
+import random
+import os
+
+# Path to the input CSV file
+file_path = "clubhopping_program_test_data.csv"
+
+# Read data from CSV file
+def read_data(file_path):
+    df = pd.read_csv(file_path)
+    return df
+
+# Assign students to groups based on the last digit of their student ID
+def assign_groups(df):
+    df['group'] = df['รหัสนักศึกษา'].astype(str).str[-1]  # Students with the same last digit are in the same group
+    df = df.sort_values(by='รหัสนักศึกษา')
+    return df
+
+# Get all unique clubs from the dataset
+def get_all_clubs(df):
+    morning_cols = [f'ฐานเช้า อันดับที่ {i}' for i in range(1, 9)]
+    afternoon_cols = [f'ฐานบ่าย อันดับที่ {i}' for i in range(1, 9)]
+    
+    morning_clubs = set()
+    afternoon_clubs = set()
+    
+    for col in morning_cols:
+        morning_clubs.update(df[col].dropna().unique())
+    
+    for col in afternoon_cols:
+        afternoon_clubs.update(df[col].dropna().unique())
+    
+    return {
+        'morning': list(morning_clubs),
+        'afternoon': list(afternoon_clubs)
+    }
+
+# Initialize time slots structure
+def initialize_time_slots(clubs):
+    time_slots = {}
+    for period in ['morning', 'afternoon']:
+        time_slots[period] = {}
+        for slot in range(1, 5):
+            time_slots[period][slot] = {}
+            for club in clubs[period]:
+                time_slots[period][slot][club] = []
+    return time_slots
+
+# Count students preferences for each club to determine popularity
+def count_preferences(df):
+    preference_counts = {
+        'morning': defaultdict(int),
+        'afternoon': defaultdict(int)
+    }
+    
+    for _, row in df.iterrows():
+        for i in range(1, 5):  # Count preferences for main choices (1-4)
+            morning_club = row[f'ฐานเช้า อันดับที่ {i}']
+            afternoon_club = row[f'ฐานบ่าย อันดับที่ {i}']
+            
+            if pd.notna(morning_club):
+                preference_counts['morning'][morning_club] += 1
+            
+            if pd.notna(afternoon_club):
+                preference_counts['afternoon'][afternoon_club] += 1
+    
+    return preference_counts
+
+# Create student preferences structure for easier access
+def create_student_preferences(df):
+    students = {}
+    
+    for _, row in df.iterrows():
+        student_id = row['รหัสนักศึกษา']
+        group = row['group']
+        
+        morning_prefs = []
+        afternoon_prefs = []
+        
+        # Get main preferences (1-4)
+        for i in range(1, 5):
+            morning_club = row[f'ฐานเช้า อันดับที่ {i}']
+            afternoon_club = row[f'ฐานบ่าย อันดับที่ {i}']
+            
+            if pd.notna(morning_club):
+                morning_prefs.append(morning_club)
+            
+            if pd.notna(afternoon_club):
+                afternoon_prefs.append(afternoon_club)
+        
+        # Get backup preferences (5-8)
+        morning_backups = []
+        afternoon_backups = []
+        
+        for i in range(5, 9):
+            morning_club = row[f'ฐานเช้า อันดับที่ {i}']
+            afternoon_club = row[f'ฐานบ่าย อันดับที่ {i}']
+            
+            if pd.notna(morning_club):
+                morning_backups.append(morning_club)
+            
+            if pd.notna(afternoon_club):
+                afternoon_backups.append(afternoon_club)
+        
+        students[student_id] = {
+            'group': group,
+            'name': row['ชื่อ นามสกุล'],
+            'preferences': {
+                'morning': {
+                    'main': morning_prefs,
+                    'backup': morning_backups
+                },
+                'afternoon': {
+                    'main': afternoon_prefs,
+                    'backup': afternoon_backups
+                }
+            },
+            'assignments': {
+                'morning': {},
+                'afternoon': {}
+            }
+        }
+    
+    return students
+
+# Calculate fairness score for a student
+def calculate_fairness_score(student, club, period, club_counts):
+    # This score determines priority when a club is oversubscribed
+    score = 0
+    
+    # How many clubs has the student already been assigned to?
+    assigned_count = len(student['assignments'][period])
+    score -= assigned_count * 10  # Prioritize students with fewer assignments
+    
+    # Is this club in their top 4 preferences?
+    if club in student['preferences'][period]['main']:
+        pref_rank = student['preferences'][period]['main'].index(club) + 1
+        score += (5 - pref_rank) * 5  # Higher rank = higher score
+    elif club in student['preferences'][period]['backup']:
+        pref_rank = student['preferences'][period]['backup'].index(club) + 1
+        score += pref_rank  # Backup preferences worth less
+    else:
+        score -= 10  # Penalize if club not in preferences
+    
+    # Factor in club popularity (give advantage to less popular clubs)
+    popularity = club_counts[period][club] / sum(club_counts[period].values())
+    score -= popularity * 10
+    
+    return score
+
+# Run a round of assignments for a specific time slot
+def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
+    # Track which club each student prefers for this slot
+    slot_preferences = defaultdict(list)
+    
+    # Collect all students' preferences for this slot
+    for student_id, student in students.items():
+        # Skip if student already has an assignment for this slot
+        if slot in student['assignments'][period]:
+            continue
+        
+        # Try to assign main preferences first
+        main_prefs = student['preferences'][period]['main']
+        if len(main_prefs) >= slot:  # Check if they have a preference for this slot
+            preferred_club = main_prefs[slot-1]
+            slot_preferences[preferred_club].append(student_id)
+        
+    # Handle oversubscribed clubs
+    for club in clubs[period]:
+        if len(slot_preferences[club]) > 20:
+            print(f"Club {club} is oversubscribed in {period} slot {slot} with {len(slot_preferences[club])} students")
+            
+            # Calculate fairness scores for all students interested in this club
+            candidates = []
+            for student_id in slot_preferences[club]:
+                fairness_score = calculate_fairness_score(students[student_id], club, period, club_counts)
+                candidates.append((student_id, fairness_score))
+            
+            # Sort by fairness score (highest to lowest)
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            
+            # Take top 20 students
+            selected_students = [c[0] for c in candidates[:20]]
+            
+            # Assign them to this club
+            for student_id in selected_students:
+                time_slots[period][slot][club].append(student_id)
+                students[student_id]['assignments'][period][slot] = club
+            
+            # Try to find alternate clubs for rejected students
+            rejected_students = [c[0] for c in candidates[20:]]
+            
+            for student_id in rejected_students:
+                # First try backup preferences
+                backup_prefs = students[student_id]['preferences'][period]['backup']
+                assigned = False
+                
+                for backup_club in backup_prefs:
+                    if len(time_slots[period][slot][backup_club]) < 20:
+                        time_slots[period][slot][backup_club].append(student_id)
+                        students[student_id]['assignments'][period][slot] = backup_club
+                        assigned = True
+                        break
+                
+                # If no backup club available, try any available club
+                if not assigned:
+                    for any_club in clubs[period]:
+                        if len(time_slots[period][slot][any_club]) < 20:
+                            time_slots[period][slot][any_club].append(student_id)
+                            students[student_id]['assignments'][period][slot] = any_club
+                            break
+        else:
+            # If not oversubscribed, assign all students to their preferred club
+            for student_id in slot_preferences[club]:
+                time_slots[period][slot][club].append(student_id)
+                students[student_id]['assignments'][period][slot] = club
+    
+    # Assign remaining students who weren't assigned yet for various reasons
+    for student_id, student in students.items():
+        if slot not in student['assignments'][period]:
+            # Try to find any available club
+            for club in clubs[period]:
+                if len(time_slots[period][slot][club]) < 20:
+                    time_slots[period][slot][club].append(student_id)
+                    students[student_id]['assignments'][period][slot] = club
+                    break
+    
+    return students, time_slots
+
+# Ensure each group has at least one student in each club
+def ensure_group_representation(students, time_slots, clubs):
+    # Track which groups are represented in which clubs
+    representation = {
+        'morning': {club: set() for club in clubs['morning']},
+        'afternoon': {club: set() for club in clubs['afternoon']}
+    }
+    
+    # Check current representation
+    for period in ['morning', 'afternoon']:
+        for slot in range(1, 5):
+            for club in clubs[period]:
+                for student_id in time_slots[period][slot][club]:
+                    group = students[student_id]['group']
+                    representation[period][club].add(group)
+    
+    # For each club missing representation from any group, try to add a student
+    for period in ['morning', 'afternoon']:
+        for club in clubs[period]:
+            missing_groups = set('0123456789') - representation[period][club]
+            
+            for group in missing_groups:
+                # Find students from this group
+                group_students = [s_id for s_id, s in students.items() if s['group'] == group]
+                
+                # Try to find a slot where the club isn't full and a student isn't assigned
+                assigned = False
+                for slot in range(1, 5):
+                    if len(time_slots[period][slot][club]) >= 20:
+                        continue  # Club is full in this slot
+                    
+                    for student_id in group_students:
+                        # If student already has this club in any slot, skip
+                        if any(students[student_id]['assignments'][period].get(s) == club 
+                               for s in range(1, 5)):
+                            continue
+                        
+                        # If student doesn't have an assignment for this slot, add them
+                        if slot not in students[student_id]['assignments'][period]:
+                            time_slots[period][slot][club].append(student_id)
+                            students[student_id]['assignments'][period][slot] = club
+                            representation[period][club].add(group)
+                            assigned = True
+                            break
+                        # Or if we need to swap assignments
+                        else:
+                            current_club = students[student_id]['assignments'][period][slot]
+                            # Only swap if current club already has representation from this group
+                            if (group in representation[period][current_club] and 
+                                len([s for s in time_slots[period][slot][current_club] 
+                                    if students[s]['group'] == group]) > 1):
+                                
+                                # Remove from current club
+                                time_slots[period][slot][current_club].remove(student_id)
+                                
+                                # Add to new club
+                                time_slots[period][slot][club].append(student_id)
+                                students[student_id]['assignments'][period][slot] = club
+                                representation[period][club].add(group)
+                                assigned = True
+                                break
+                    
+                    if assigned:
+                        break
+    
+    return students, time_slots
+
+# Main function to run the allocation algorithm
+def allocate_clubs():
+    print("Starting club allocation process...")
+    
+    # Read and prepare data
+    print("Reading data from CSV...")
+    df = read_data(file_path)
+    df = assign_groups(df)
+    
+    # Get all clubs and initialize structures
+    clubs = get_all_clubs(df)
+    print(f"Found {len(clubs['morning'])} morning clubs and {len(clubs['afternoon'])} afternoon clubs")
+    
+    time_slots = initialize_time_slots(clubs)
+    club_counts = count_preferences(df)
+    students = create_student_preferences(df)
+    
+    print("Allocating students to clubs...")
+    
+    # First pass: Assign students to clubs for each time slot
+    for period in ['morning', 'afternoon']:
+        for slot in range(1, 5):
+            print(f"Processing {period} slot {slot}...")
+            students, time_slots = assign_time_slot(students, time_slots, period, slot, club_counts, clubs)
+    
+    # Second pass: Ensure all groups are represented in all clubs
+    print("Ensuring group representation in all clubs...")
+    students, time_slots = ensure_group_representation(students, time_slots, clubs)
+    
+    # Create results DataFrame
+    print("Creating results...")
+    results = []
+    
+    # Track club swaps
+    swaps = []
+    
+    # Group students by their group number (0-9)
+    students_by_group = {g: [] for g in '0123456789'}
+    for student_id, student in students.items():
+        students_by_group[student['group']].append(student_id)
+    
+    # Process each group
+    for group in '0123456789':
+        group_students = sorted(students_by_group[group])
+        
+        for student_id in group_students:
+            student = students[student_id]
+            result = {
+                'รหัสนักศึกษา': student_id,
+                'ชื่อ นามสกุล': student['name'],
+                'กลุ่ม': student['group']
+            }
+            
+            # Track club changes
+            student_swaps = []
+            
+            # Add morning assignments and check for swaps
+            for slot in range(1, 5):
+                assigned_club = student['assignments']['morning'].get(slot, None)
+                result[f'ชมรมเช้า ช่วงที่ {slot}'] = assigned_club
+                
+                # Check if this was their preference
+                preferences = student['preferences']['morning']['main']
+                if slot <= len(preferences) and assigned_club != preferences[slot-1]:
+                    original = preferences[slot-1] if slot <= len(preferences) else "ไม่ได้เลือก"
+                    swap_info = f"เช้า ช่วงที่ {slot}: {original} → {assigned_club}"
+                    student_swaps.append(swap_info)
+            
+            # Add afternoon assignments and check for swaps
+            for slot in range(1, 5):
+                assigned_club = student['assignments']['afternoon'].get(slot, None)
+                result[f'ชมรมบ่าย ช่วงที่ {slot}'] = assigned_club
+                
+                # Check if this was their preference
+                preferences = student['preferences']['afternoon']['main']
+                if slot <= len(preferences) and assigned_club != preferences[slot-1]:
+                    original = preferences[slot-1] if slot <= len(preferences) else "ไม่ได้เลือก"
+                    swap_info = f"บ่าย ช่วงที่ {slot}: {original} → {assigned_club}"
+                    student_swaps.append(swap_info)
+            
+            # Add swap information
+            if student_swaps:
+                result['การเปลี่ยนชมรม'] = ', '.join(student_swaps)
+                swaps.append({
+                    'รหัสนักศึกษา': student_id,
+                    'ชื่อ นามสกุล': student['name'],
+                    'กลุ่ม': student['group'],
+                    'การเปลี่ยนชมรม': ', '.join(student_swaps)
+                })
+            else:
+                result['การเปลี่ยนชมรม'] = 'ไม่มีการเปลี่ยนแปลง'
+            
+            # Add original preferences for reference
+            for period in ['morning', 'afternoon']:
+                prefix = 'ฐานเช้า' if period == 'morning' else 'ฐานบ่าย'
+                
+                for i in range(1, 5):
+                    if i <= len(student['preferences'][period]['main']):
+                        result[f'{prefix} อันดับที่ {i}'] = student['preferences'][period]['main'][i-1]
+                    else:
+                        result[f'{prefix} อันดับที่ {i}'] = None
+                
+                for i in range(5, 9):
+                    backup_idx = i - 5
+                    if backup_idx < len(student['preferences'][period]['backup']):
+                        result[f'{prefix} อันดับที่ {i}'] = student['preferences'][period]['backup'][backup_idx]
+                    else:
+                        result[f'{prefix} อันดับที่ {i}'] = None
+            
+            # Add this student to results
+            results.append(result)
+            
+        # Add empty row between groups (except after the last group)
+        if group != '9':
+            empty_row = {col: '' for col in results[0].keys()}
+            empty_row['รหัสนักศึกษา'] = f'--- จบกลุ่ม {group} ---'
+            results.append(empty_row)
+    
+    # Create main results DataFrame
+    results_df = pd.DataFrame(results)
+    
+    # Create swaps DataFrame if there are any swaps
+    if swaps:
+        swaps_df = pd.DataFrame(swaps)
+        swaps_output_path = "club_assignment_swaps.csv"
+        swaps_df.to_csv(swaps_output_path, index=False, encoding='utf-8-sig')
+        print(f"Swap information saved to {swaps_output_path}")
+    
+    # Calculate statistics
+    stats = calculate_statistics(students, clubs)
+    
+    # Add detailed statistics by time slot
+    detailed_stats = calculate_detailed_statistics(students, time_slots, clubs)
+    
+    # Print statistics
+    print_statistics(stats, detailed_stats, students, clubs)
+    
+    # Save to CSV
+    output_path = "club_assignment_results_improved.csv"
+    results_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+    print(f"Results saved to {output_path}")
+    
+    return results_df, stats
+
+# Calculate statistics about the assignments
+def calculate_statistics(students, clubs):
+    stats = {
+        'morning': {
+            'main_assignments': 0,
+            'backup_assignments': 0,
+            'other_assignments': 0,
+            'club_distribution': {club: 0 for club in clubs['morning']}
+        },
+        'afternoon': {
+            'main_assignments': 0,
+            'backup_assignments': 0,
+            'other_assignments': 0,
+            'club_distribution': {club: 0 for club in clubs['afternoon']}
+        },
+        'group_representation': {
+            'morning': {club: set() for club in clubs['morning']},
+            'afternoon': {club: set() for club in clubs['afternoon']}
+        }
+    }
+    
+    # Count types of assignments and club distribution
+    for student_id, student in students.items():
+        group = student['group']
+        
+        for period in ['morning', 'afternoon']:
+            for slot, club in student['assignments'][period].items():
+                # Count by type
+                if club in student['preferences'][period]['main']:
+                    stats[period]['main_assignments'] += 1
+                elif club in student['preferences'][period]['backup']:
+                    stats[period]['backup_assignments'] += 1
+                else:
+                    stats[period]['other_assignments'] += 1
+                
+                # Count by club
+                stats[period]['club_distribution'][club] += 1
+                
+                # Add group representation
+                stats['group_representation'][period][club].add(group)
+    
+    return stats
+
+# Calculate detailed statistics by time slot and group
+def calculate_detailed_statistics(students, time_slots, clubs):
+    detailed_stats = {
+        'slots': {
+            'morning': {slot: {club: [] for club in clubs['morning']} for slot in range(1, 5)},
+            'afternoon': {slot: {club: [] for club in clubs['afternoon']} for slot in range(1, 5)}
+        },
+        'group_slots': {
+            'morning': {slot: {club: {g: 0 for g in '0123456789'} for club in clubs['morning']} for slot in range(1, 5)},
+            'afternoon': {slot: {club: {g: 0 for g in '0123456789'} for club in clubs['afternoon']} for slot in range(1, 5)}
+        }
+    }
+    
+    # Count number of students in each club for each time slot
+    for period in ['morning', 'afternoon']:
+        for slot in range(1, 5):
+            for club in clubs[period]:
+                for student_id in time_slots[period][slot][club]:
+                    student_group = students[student_id]['group']
+                    detailed_stats['slots'][period][slot][club].append(student_id)
+                    detailed_stats['group_slots'][period][slot][club][student_group] += 1
+    
+    return detailed_stats
+
+# Print statistics about the assignments
+def print_statistics(stats, detailed_stats, students, clubs):
+    total_students = len(students)
+    total_slots = total_students * 4  # 4 slots per period
+    
+    print("\n--- Assignment Statistics ---")
+    
+    for period in ['morning', 'afternoon']:
+        print(f"\n{period.upper()} ASSIGNMENTS:")
+        
+        main_pct = stats[period]['main_assignments'] / total_slots * 100
+        backup_pct = stats[period]['backup_assignments'] / total_slots * 100
+        other_pct = stats[period]['other_assignments'] / total_slots * 100
+        
+        print(f"  Main preferences (1-4): {stats[period]['main_assignments']} ({main_pct:.1f}%)")
+        print(f"  Backup preferences (5-8): {stats[period]['backup_assignments']} ({backup_pct:.1f}%)")
+        print(f"  Other assignments: {stats[period]['other_assignments']} ({other_pct:.1f}%)")
+        
+        print("\n  Most popular clubs:")
+        sorted_clubs = sorted(stats[period]['club_distribution'].items(), 
+                            key=lambda x: x[1], reverse=True)
+        for club, count in sorted_clubs[:5]:
+            print(f"    - {club}: {count} students")
+        
+        print("\n  Least popular clubs:")
+        for club, count in sorted_clubs[-5:]:
+            print(f"    - {club}: {count} students")
+    
+    print("\n--- Detailed Time Slot Assignment ---")
+    oversubscribed = False
+    
+    # Print detailed student counts for each club in each time slot
+    for period in ['morning', 'afternoon']:
+        print(f"\n{period.upper()} TIME SLOTS:")
+        
+        for slot in range(1, 5):
+            print(f"\n  Slot {slot}:")
+            print(f"  {'Club':<40} {'Total':>5} | {'0 1 2 3 4 5 6 7 8 9':>20}")
+            print(f"  {'-'*40} {'-'*5} | {'-'*20}")
+            
+            for club in sorted(clubs[period]):
+                student_count = len(detailed_stats['slots'][period][slot][club])
+                group_counts = [str(detailed_stats['group_slots'][period][slot][club][g]) for g in '0123456789']
+                group_distribution = ' '.join(group_counts)
+                
+                # Highlight if a club has more than 20 students
+                status = "" if student_count <= 20 else "[OVER]" 
+                if student_count > 20:
+                    oversubscribed = True
+                
+                print(f"  {club:<40} {student_count:>5} | {group_distribution:>20} {status}")
+    
+    if oversubscribed:
+        print("\n[OVER] indicates clubs that exceed the 20 student limit")
+    
+    print("\n--- Group Representation ---")
+    missing_representation = False
+    
+    # Check if each group has at least one member in each club for each time slot
+    for period in ['morning', 'afternoon']:
+        for slot in range(1, 5):
+            for club in sorted(clubs[period]):
+                missing_groups = []
+                for group in '0123456789':
+                    if detailed_stats['group_slots'][period][slot][club][group] == 0:
+                        missing_groups.append(group)
+                
+                if missing_groups:
+                    missing_representation = True
+                    missing_str = ', '.join(missing_groups)
+                    print(f"  {club} ({period} slot {slot}) is missing students from groups: {missing_str}")
+    
+    if not missing_representation:
+        print("  All clubs have representation from all groups in all time slots!")
+    else:
+        print("  Warning: Some clubs are missing representation from certain groups!")
+
+# Run the program if executed directly
+if __name__ == "__main__":
+    results_df, stats = allocate_clubs()
