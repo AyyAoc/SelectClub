@@ -299,6 +299,16 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                         students[student_id]['assignments'][period][slot] = chosen_club
                         club_groups[chosen_club].add(students[student_id]['group'])
                         assigned = True
+                    # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
+                    else:
+                        all_clubs = list(clubs[period])
+                        all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = all_clubs[0]  # Club with fewest students
+                        
+                        print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
+                        time_slots[period][slot][chosen_club].append(student_id)
+                        students[student_id]['assignments'][period][slot] = chosen_club
+                        club_groups[chosen_club].add(students[student_id]['group'])
                         
         elif len(slot_preferences[club]) <= remaining_capacity:
             # If not oversubscribed, assign all students to their preferred club
@@ -330,6 +340,17 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                     available_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
                     chosen_club = available_clubs[0]
                 
+                time_slots[period][slot][chosen_club].append(student_id)
+                students[student_id]['assignments'][period][slot] = chosen_club
+                club_groups[chosen_club].add(group)
+            # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
+            else:
+                group = student['group']
+                all_clubs = list(clubs[period])
+                all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                chosen_club = all_clubs[0]  # Club with fewest students
+                
+                print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
                 time_slots[period][slot][chosen_club].append(student_id)
                 students[student_id]['assignments'][period][slot] = chosen_club
                 club_groups[chosen_club].add(group)
@@ -368,7 +389,39 @@ def ensure_group_representation(students, time_slots, clubs):
             for group in missing_groups:
                 # Find students from this group
                 group_students = [s_id for s_id, s in students.items() if s['group'] == group]
-                random.shuffle(group_students)  # Randomize to avoid biases
+                
+                # Prioritize students who have this club in their preferences (main or backup)
+                prioritized_students = []
+                other_students = []
+                
+                for s_id in group_students:
+                    student = students[s_id]
+                    main_prefs = student['preferences'][period]['main']
+                    backup_prefs = student['preferences'][period]['backup']
+                    
+                    if club in main_prefs:
+                        # Higher priority for main preferences
+                        priority = 2  # Highest priority
+                        rank = main_prefs.index(club) + 1
+                        prioritized_students.append((s_id, priority, rank))
+                    elif club in backup_prefs:
+                        # Medium priority for backup preferences
+                        priority = 1  # Medium priority
+                        rank = backup_prefs.index(club) + 1
+                        prioritized_students.append((s_id, priority, rank))
+                    else:
+                        # Lowest priority for students who didn't choose this club
+                        other_students.append(s_id)
+                
+                # Sort prioritized students by priority (higher first) and then by rank (lower first)
+                prioritized_students.sort(key=lambda x: (-x[1], x[2]))  # Sort by priority desc, then rank asc
+                prioritized_student_ids = [s[0] for s in prioritized_students]
+                
+                # Only use random order for students who didn't select this club
+                random.shuffle(other_students)
+                
+                # Final ordered list: prioritized students first, then random others
+                group_students = prioritized_student_ids + other_students
                 
                 # Try to find a slot where we can add the student
                 assigned = False
@@ -492,6 +545,22 @@ def allocate_clubs():
     # Second pass: Ensure all groups are represented in all clubs
     print("Ensuring group representation in all clubs...")
     students, time_slots = ensure_group_representation(students, time_slots, clubs)
+    
+    # Final pass: Verify that all students have assignments for every time slot
+    print("Verifying all students have complete assignments...")
+    for period in ['morning', 'afternoon']:
+        for slot in range(1, 5):
+            for student_id, student in students.items():
+                if slot not in student['assignments'][period]:
+                    print(f"WARNING: Student {student_id} missing assignment for {period} slot {slot}. Assigning to club with fewest students.")
+                    # Find club with fewest students
+                    all_clubs = list(clubs[period])
+                    all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                    chosen_club = all_clubs[0]  # Club with fewest students
+                    
+                    # Assign student to this club
+                    time_slots[period][slot][chosen_club].append(student_id)
+                    student['assignments'][period][slot] = chosen_club
     
     # Create results DataFrame
     print("Creating results...")
