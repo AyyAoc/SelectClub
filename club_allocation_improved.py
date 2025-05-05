@@ -5,7 +5,7 @@ import random
 import os
 
 # Path to the input CSV file
-file_path = "clubhopping_program_test_data.csv"
+file_path = "test_250.csv"
 
 # Read data from CSV file
 def read_data(file_path):
@@ -181,6 +181,14 @@ def calculate_fairness_score(student, club, period, club_counts, represented_gro
     return score
 
 # Run a round of assignments for a specific time slot
+# Check for duplicate club assignments for a student
+def has_duplicate_assignment(student, club, period, slot):
+    """Check if a student already has this club assigned in another time slot in the same period."""
+    for existing_slot, assigned_club in student['assignments'][period].items():
+        if existing_slot != slot and assigned_club == club:
+            return True
+    return False
+
 def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
     # Track which club each student prefers for this slot
     slot_preferences = defaultdict(list)
@@ -203,7 +211,19 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
         main_prefs = student['preferences'][period]['main']
         if len(main_prefs) >= slot:  # Check if they have a preference for this slot
             preferred_club = main_prefs[slot-1]
-            slot_preferences[preferred_club].append(student_id)
+            # Only add if this club isn't already assigned to the student in another slot
+            if not has_duplicate_assignment(student, preferred_club, period, slot):
+                slot_preferences[preferred_club].append(student_id)
+            else:
+                # If duplicate, try their next backup preference that isn't a duplicate
+                found_non_duplicate = False
+                # Check backup preferences
+                for backup_club in student['preferences'][period]['backup']:
+                    if not has_duplicate_assignment(student, backup_club, period, slot):
+                        slot_preferences[backup_club].append(student_id)
+                        found_non_duplicate = True
+                        break
+                # If all backups are duplicates too, we'll handle this later in the unassigned students section
         
     # First pass: Ensure group representation
     # For each club, make sure there's at least one student from each group
@@ -250,6 +270,10 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
             # Calculate fairness scores for all students interested in this club
             candidates = []
             for student_id in slot_preferences[club]:
+                # Check again if assignment would create a duplicate (just in case)
+                if has_duplicate_assignment(students[student_id], club, period, slot):
+                    continue
+                    
                 # Consider existing group representation for fairness scoring
                 group = students[student_id]['group']
                 represented_groups = club_groups[club]
@@ -279,6 +303,10 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                 assigned = False
                 
                 for backup_club in backup_prefs:
+                    # Check if assignment would create a duplicate
+                    if has_duplicate_assignment(students[student_id], backup_club, period, slot):
+                        continue
+                        
                     if len(time_slots[period][slot][backup_club]) < 20:
                         time_slots[period][slot][backup_club].append(student_id)
                         students[student_id]['assignments'][period][slot] = backup_club
@@ -288,8 +316,11 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                 
                 # If no backup club available, try any available club
                 if not assigned:
+                    # Find clubs that aren't duplicates and have space
                     available_clubs = [club for club in clubs[period] 
-                                     if len(time_slots[period][slot][club]) < 20]
+                                     if len(time_slots[period][slot][club]) < 20 and 
+                                     not has_duplicate_assignment(students[student_id], club, period, slot)]
+                    
                     if available_clubs:
                         # Choose club with fewest students
                         available_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
@@ -299,16 +330,41 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                         students[student_id]['assignments'][period][slot] = chosen_club
                         club_groups[chosen_club].add(students[student_id]['group'])
                         assigned = True
-                    # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
                     else:
-                        all_clubs = list(clubs[period])
-                        all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
-                        chosen_club = all_clubs[0]  # Club with fewest students
+                        # If all clubs with space would create duplicates, we need to find the best option
+                        # Start with clubs that have space
+                        space_clubs = [club for club in clubs[period] 
+                                      if len(time_slots[period][slot][club]) < 20]
                         
-                        print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
-                        time_slots[period][slot][chosen_club].append(student_id)
-                        students[student_id]['assignments'][period][slot] = chosen_club
-                        club_groups[chosen_club].add(students[student_id]['group'])
+                        if space_clubs:
+                            # Choose the club with space that student hasn't been assigned to if possible
+                            space_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                            chosen_club = space_clubs[0]
+                            
+                            time_slots[period][slot][chosen_club].append(student_id)
+                            students[student_id]['assignments'][period][slot] = chosen_club
+                            club_groups[chosen_club].add(students[student_id]['group'])
+                            assigned = True
+                        # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
+                        else:
+                            # Find clubs that aren't duplicates first
+                            non_duplicate_clubs = [club for club in clubs[period]
+                                                 if not has_duplicate_assignment(students[student_id], club, period, slot)]
+                            
+                            if non_duplicate_clubs:
+                                # Choose the one with fewest students
+                                non_duplicate_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                                chosen_club = non_duplicate_clubs[0]
+                            else:
+                                # If all clubs would create duplicates, just pick the one with fewest students
+                                all_clubs = list(clubs[period])
+                                all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                                chosen_club = all_clubs[0]
+                            
+                            print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
+                            time_slots[period][slot][chosen_club].append(student_id)
+                            students[student_id]['assignments'][period][slot] = chosen_club
+                            club_groups[chosen_club].add(students[student_id]['group'])
                         
         elif len(slot_preferences[club]) <= remaining_capacity:
             # If not oversubscribed, assign all students to their preferred club
@@ -320,9 +376,10 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
     # Assign remaining students who weren't assigned yet for various reasons
     for student_id, student in students.items():
         if slot not in student['assignments'][period]:
-            # Try to find any available club with space
+            # Try to find any available club with space that won't create duplicates
             available_clubs = [club for club in clubs[period] 
-                              if len(time_slots[period][slot][club]) < 20]
+                              if len(time_slots[period][slot][club]) < 20 and
+                              not has_duplicate_assignment(student, club, period, slot)]
             
             if available_clubs:
                 # Prefer clubs with missing group representation
@@ -343,17 +400,43 @@ def assign_time_slot(students, time_slots, period, slot, club_counts, clubs):
                 time_slots[period][slot][chosen_club].append(student_id)
                 students[student_id]['assignments'][period][slot] = chosen_club
                 club_groups[chosen_club].add(group)
-            # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
             else:
-                group = student['group']
-                all_clubs = list(clubs[period])
-                all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
-                chosen_club = all_clubs[0]  # Club with fewest students
+                # If all clubs with space would create duplicates, try clubs with space
+                space_clubs = [club for club in clubs[period] 
+                              if len(time_slots[period][slot][club]) < 20]
                 
-                print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
-                time_slots[period][slot][chosen_club].append(student_id)
-                students[student_id]['assignments'][period][slot] = chosen_club
-                club_groups[chosen_club].add(group)
+                if space_clubs:
+                    # Choose the club with fewest students
+                    space_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                    chosen_club = space_clubs[0]
+                    
+                    time_slots[period][slot][chosen_club].append(student_id)
+                    students[student_id]['assignments'][period][slot] = chosen_club
+                    club_groups[chosen_club].add(student['group'])
+                    print(f"WARNING: Created duplicate assignment for student {student_id} in {period} to club {chosen_club} due to limited options")
+                # If no club has space, assign to club with most space anyway (exceeding 20 if necessary)
+                else:
+                    group = student['group']
+                    
+                    # First try to find clubs that won't create duplicates
+                    non_duplicate_clubs = [club for club in clubs[period]
+                                         if not has_duplicate_assignment(student, club, period, slot)]
+                    
+                    if non_duplicate_clubs:
+                        # Sort by number of students
+                        non_duplicate_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = non_duplicate_clubs[0]
+                    else:
+                        # All clubs would create duplicates, choose the least crowded one
+                        all_clubs = list(clubs[period])
+                        all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = all_clubs[0]  # Club with fewest students
+                        print(f"WARNING: Created duplicate assignment for student {student_id} in {period} to club {chosen_club} due to no alternatives")
+                    
+                    print(f"WARNING: Exceeding 20-student limit for {chosen_club} in {period} slot {slot} to assign student {student_id}")
+                    time_slots[period][slot][chosen_club].append(student_id)
+                    students[student_id]['assignments'][period][slot] = chosen_club
+                    club_groups[chosen_club].add(group)
     
     return students, time_slots
 
@@ -546,21 +629,83 @@ def allocate_clubs():
     print("Ensuring group representation in all clubs...")
     students, time_slots = ensure_group_representation(students, time_slots, clubs)
     
-    # Final pass: Verify that all students have assignments for every time slot
-    print("Verifying all students have complete assignments...")
+    # Final pass: Verify that all students have assignments for every time slot and check for duplicates
+    print("Verifying all students have complete assignments without duplicates...")
     for period in ['morning', 'afternoon']:
         for slot in range(1, 5):
+            # First check for missing assignments
             for student_id, student in students.items():
                 if slot not in student['assignments'][period]:
                     print(f"WARNING: Student {student_id} missing assignment for {period} slot {slot}. Assigning to club with fewest students.")
-                    # Find club with fewest students
-                    all_clubs = list(clubs[period])
-                    all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
-                    chosen_club = all_clubs[0]  # Club with fewest students
+                    
+                    # Try to find club without creating duplicates
+                    non_duplicate_clubs = [club for club in clubs[period]
+                                         if not has_duplicate_assignment(student, club, period, slot)]
+                    
+                    if non_duplicate_clubs:
+                        # Sort by number of students
+                        non_duplicate_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = non_duplicate_clubs[0]
+                    else:
+                        # If all would create duplicates, choose the one with fewest students
+                        all_clubs = list(clubs[period])
+                        all_clubs.sort(key=lambda c: len(time_slots[period][slot][c]))
+                        chosen_club = all_clubs[0]  # Club with fewest students
+                        print(f"WARNING: Creating duplicate for student {student_id} in {period} with club {chosen_club} due to no alternatives")
                     
                     # Assign student to this club
                     time_slots[period][slot][chosen_club].append(student_id)
                     student['assignments'][period][slot] = chosen_club
+            
+            # Then check for and fix duplicates
+            for student_id, student in students.items():
+                # Get all clubs assigned to the student in this period
+                assigned_clubs = [club for slot_num, club in student['assignments'][period].items()]
+                
+                # Check for duplicates
+                club_counts = Counter(assigned_clubs)
+                duplicate_clubs = [club for club, count in club_counts.items() if count > 1]
+                
+                if duplicate_clubs:
+                    print(f"Fixing duplicate assignments for student {student_id} in {period} (duplicates: {duplicate_clubs})")
+                    
+                    # Find which slots have the duplicates
+                    slots_by_club = defaultdict(list)
+                    for slot_num, club in student['assignments'][period].items():
+                        slots_by_club[club].append(slot_num)
+                    
+                    # Fix duplicates, keeping the first occurrence and changing others
+                    for club in duplicate_clubs:
+                        duplicate_slots = slots_by_club[club][1:]  # Keep first occurrence, change others
+                        
+                        for duplicate_slot in duplicate_slots:
+                            # Remove from current assignment
+                            current_club = student['assignments'][period][duplicate_slot]
+                            time_slots[period][duplicate_slot][current_club].remove(student_id)
+                            
+                            # Find alternative club that isn't already assigned
+                            already_assigned = set(assigned_clubs)
+                            available_clubs = [c for c in clubs[period] if c not in already_assigned]
+                            
+                            if available_clubs:
+                                # Choose club with fewest students
+                                available_clubs.sort(key=lambda c: len(time_slots[period][duplicate_slot][c]))
+                                new_club = available_clubs[0]
+                            else:
+                                # If all clubs would still create duplicates, choose least duplicated one
+                                potential_clubs = list(clubs[period])
+                                # Sort by count in student's assignments (prefer less duplicated)
+                                potential_clubs.sort(key=lambda c: club_counts.get(c, 0))
+                                new_club = potential_clubs[0]
+                            
+                            # Assign to new club
+                            time_slots[period][duplicate_slot][new_club].append(student_id)
+                            student['assignments'][period][duplicate_slot] = new_club
+                            print(f"  Changed {period} slot {duplicate_slot} from {club} to {new_club}")
+                            
+                            # Update for next iteration
+                            assigned_clubs = [club for slot_num, club in student['assignments'][period].items()]
+                            club_counts = Counter(assigned_clubs)
     
     # Create results DataFrame
     print("Creating results...")
