@@ -6,67 +6,92 @@ import itertools
 import os
 import math
 
-# กำหนดพิกัดของแต่ละอาคารที่ชมรมตั้งอยู่ (building_id: [x, y])
-# สมมติค่าพิกัดเพื่อคำนวณระยะทาง
+# กำหนดพิกัดของแต่ละอาคารที่ชมรมตั้งอยู่ (building_id: [latitude, longitude])
+# ใช้ค่าพิกัดจริงเพื่อความแม่นยำในการคำนวณระยะทาง
 building_locations = {
-    'อาคาร 1': [0, 0],
-    'อาคาร 2': [10, 0],
-    'อาคาร 3': [20, 0],
-    'อาคาร 4': [0, 10],
-    'อาคาร 5': [10, 10],
-    'อาคาร 6': [20, 10],
-    'อาคาร 7': [0, 20],
-    'อาคาร 8': [10, 20],
-    'อาคาร 9': [20, 20],
-    'สนามกีฬา': [15, 5],
-    'สระว่ายน้ำ': [5, 15]
+    'อาคาร 1': [18.790902, 98.972707],  # Coverdance/Devil location
+    'อาคาร 2': [18.792078, 98.971493],  # Chorus location
+    'อาคาร 3': [18.790902, 98.972707],  # Devil location (same as Coverdance)
+    'อาคาร 4': [18.791527, 98.972063],  # Pingpong location
+    'อาคาร 5': [18.789980, 98.973104],  # Art location
+    'อาคาร 6': [18.790933, 98.972240],  # Bridge location
+    'อาคาร 7': [18.789990, 98.972625],  # E-Sport location
+    'อาคาร 8': [18.789990, 98.972625],  # IMSU location (same as E-Sport)
+    'อาคาร 9': [18.789990, 98.972625],  # Libir/Research location (same as E-Sport)
+    'สนามกีฬา': [18.791656, 98.971530],  # Tennis, Basketball, Football, etc.
+    'สระว่ายน้ำ': [18.790549, 98.972482]   # Swimming location
 }
 
 # กำหนดชมรมอยู่ที่อาคารไหน (club_name: building_id)
 club_buildings = {
     # ชมรมช่วงเช้า
-    'บาสเก็ตบอล': 'สนามกีฬา',
-    'แชร์บอล': 'สนามกีฬา',
-    'CHORUS': 'อาคาร 2',
-    'DEVIL': 'อาคาร 3',
-    'ฟุตบอล': 'สนามกีฬา',
-    'เทนนิส': 'สนามกีฬา',  
-    'ดนตรีไทย': 'อาคาร 2',
-    'วิ่ง': 'สนามกีฬา',
-    'วอลเลย์บอล': 'สนามกีฬา',
-    'MUAN': 'อาคาร 6',
-    'ART': 'อาคาร 5',
-    'เปตอง': 'อาคาร 9',    
-    'Swimming (ชมรมว่ายน้ำและโปโลน้ำ)': 'สระว่ายน้ำ',
+    'บาสเก็ตบอล': { 'lat': 18.791278, 'lng': 98.971319 },
+    'แชร์บอล': { 'lat': 18.791527, 'lng': 98.972063 },
+    'CHORUS': { 'lat': 18.792078, 'lng': 98.971493 },
+    'DEVIL': { 'lat': 18.790902, 'lng': 98.972707 },
+    'ฟุตบอล': { 'lat': 18.789815, 'lng': 98.971550 },
+    'เทนนิส': { 'lat': 18.791656, 'lng': 98.971530 },  
+    'ดนตรีไทย': { 'lat': 18.790943, 'lng': 98.971439 },
+    'วิ่ง': { 'lat': 18.789815, 'lng': 98.971550 },
+    'วอลเลย์บอล': { 'lat': 18.791283, 'lng': 98.971479 },
+    'MUAN': { 'lat': 18.789980, 'lng': 98.973104 },
+    'ART': { 'lat': 18.789980, 'lng': 98.973104 },
+    'เปตอง': { 'lat': 18.789815, 'lng': 98.971550 },    
+    'Swimming (ชมรมว่ายน้ำและโปโลน้ำ)': { 'lat': 18.790549, 'lng': 98.972482 },
     # ชมรมช่วงบ่าย
-    'Bridge': 'อาคาร 6',
-    'E-sport': 'อาคาร 7',
-    'IMSU': 'อาคาร 8',
-    'Libir': 'อาคาร 9',
-    'MCCC': 'อาคาร 5', 
-    'พอช.': 'อาคาร 8',
-    'Research': 'อาคาร 9',
-    'หมอน้อย': 'อาคาร 7',
-    'ปิงปอง': 'อาคาร 4',
-    'แบตมินตัน': 'สนามกีฬา',
-    'ดนตรีสากล': 'อาคาร 2',
-    'cheerleader': 'อาคาร 1',
-    'CMSO': 'อาคาร 9',
-    'coverdance': 'อาคาร 1',
+    'Bridge': { 'lat': 18.790933, 'lng': 98.972240 },
+    'E-sport': { 'lat': 18.789990, 'lng': 98.972625 },
+    'IMSU': { 'lat': 18.789990, 'lng': 98.972625 },
+    'Libir': { 'lat': 18.789990, 'lng': 98.972625 },
+    'MCCC': { 'lat': 18.789990, 'lng': 98.972625 }, 
+    'พอช.': { 'lat': 18.789980, 'lng': 98.973104 },
+    'Research': { 'lat': 18.789990, 'lng': 98.972625 },
+    'หมอน้อย': { 'lat': 18.789980, 'lng': 98.973104 },
+    'ปิงปอง': { 'lat': 18.791527, 'lng': 98.972063 },
+    'แบตมินตัน': { 'lat': 18.791527, 'lng': 98.972063 },
+    'ดนตรีสากล': { 'lat': 18.790943, 'lng': 98.971439 },
+    'cheerleader': { 'lat': 18.790549, 'lng': 98.972482 },
+    'CMSO': { 'lat': 18.790257, 'lng': 98.972933 },
+    'coverdance': { 'lat': 18.790902, 'lng': 98.972707 },
 }
 
 # คำนวณระยะทางระหว่างสองอาคาร
 def calculate_distance(building1, building2):
     """
-    คำนวณระยะทางระหว่างสองอาคารโดยใช้ Euclidean distance
+    คำนวณระยะทางระหว่างสองตำแหน่งโดยใช้ Haversine formula (สำหรับคำนวณระยะทางบนพื้นผิวโลก)
+    ผลลัพธ์เป็นระยะทางในหน่วยกิโลเมตร
+    สามารถรับ parameter ได้ทั้งชื่ออาคารหรือ dict ที่มี keys 'lat' และ 'lng'
     """
-    if building1 not in building_locations or building2 not in building_locations:
-        return float('inf')  # ถ้าไม่พบอาคาร ให้ถือว่าระยะทางเป็นอนันต์
+    # กรณีที่รับชื่ออาคารมา
+    if isinstance(building1, str) and isinstance(building2, str):
+        if building1 not in building_locations or building2 not in building_locations:
+            return float('inf')  # ถ้าไม่พบอาคาร ให้ถือว่าระยะทางเป็นอนันต์
+        
+        lat1, lon1 = building_locations[building1]
+        lat2, lon2 = building_locations[building2]
+    # กรณีที่รับ dict ที่มี keys 'lat' และ 'lng' มา
+    elif isinstance(building1, dict) and isinstance(building2, dict):
+        lat1 = building1['lat']
+        lon1 = building1['lng']
+        lat2 = building2['lat']
+        lon2 = building2['lng']
+    else:
+        return float('inf')  # ถ้าข้อมูลไม่ถูกต้อง ให้ถือว่าระยะทางเป็นอนันต์
     
-    x1, y1 = building_locations[building1]
-    x2, y2 = building_locations[building2]
+    # แปลงเป็นเรเดียน
+    lat1 = math.radians(lat1)
+    lon1 = math.radians(lon1)
+    lat2 = math.radians(lat2)
+    lon2 = math.radians(lon2)
     
-    return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    r = 6371  # รัศมีของโลกในกิโลเมตร
+    
+    return c * r  # ระยะทางในหน่วยกิโลเมตร
 
 # คำนวณระยะทางระหว่างสองชมรม
 def calculate_club_distance(club1, club2):
@@ -446,8 +471,8 @@ def save_optimized_assignments(students, output_file):
 # ฟังก์ชันหลัก
 def main():
     # กำหนดพารามิเตอร์
-    input_file = "club_assignment_results_improved.csv"
-    output_file = "club_assignment_results_optimized.csv"
+    input_file = "SelectClub\club_assignment_results_improved.csv"
+    output_file = "SelectClub\club_assignment_results_optimized.csv"
     max_swaps = 1000  # จำนวนการสลับสูงสุด
     
     print(f"Optimizing club assignment paths...")
